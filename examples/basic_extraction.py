@@ -6,8 +6,8 @@ the graph, does the I/O when the graph asks a question, threads the reply back
 in, and owns the turn budget. Everything inside `graph.invoke` is the library.
 
 Toggle INTERACTIVE:
-  True  -> chat in the terminal via input()/print()
-  False -> scripted replies, with PromptLogger printing the raw LLM I/O
+  True  -> chat in the terminal; LLM I/O logged to llm.jsonl (inspect separately)
+  False -> scripted replies, with PromptLogger printing the raw LLM I/O to stdout
 """
 
 import os
@@ -50,7 +50,8 @@ def main():
 
     # === seed the first turn ===
     if INTERACTIVE:
-        config = None  # keep the chat clean
+        # LLM I/O goes to a JSONL file
+        config = {"callbacks": [PromptLogger("llm.jsonl")]}
         print("Hi! Let's set up your contact details. Tell me about yourself.")
         state = ExtractionState(user_input=input("\n> "))
     else:
