@@ -10,16 +10,26 @@ class ExtractionState(BaseModel):
     """State for the extraction loop graph.
 
     The client owns the multi-turn loop: it sets a new ``user_input`` each turn,
-    passes the rest of the state back in, and decides when to stop. Only
-    ``user_input`` is required to seed a conversation; everything else defaults.
+    passes the rest of the state back in, and decides when to stop.
+    Only ``user_input`` is required to seed a conversation; everything else defaults.
     """
 
-    user_input: str  # new human input for this turn
-    filled: dict[str, Any] = Field(default_factory=dict)  # accumulated raw fields
-    messages: list[BaseMessage] = Field(default_factory=list)  # running transcript
-    missing: list[str] = Field(default_factory=list)  # fields still unfilled/invalid
-    result: Optional[BaseModel] = None  # validated target model; None until complete
-    agent_message: str = ""  # follow-up question to the user (empty unless asking)
+    user_input: str = Field(description="New user input for this turn")
+    filled: dict[str, Any] = Field(
+        default_factory=dict, description="Accumulated raw fields"
+    )
+    messages: list[BaseMessage] = Field(
+        default_factory=list, description="Running conversation transcript"
+    )
+    missing: list[str] = Field(
+        default_factory=list, description="Required fields still unfilled or invalid"
+    )
+    result: Optional[BaseModel] = Field(
+        default=None, description="Validated target model; None until complete"
+    )
+    agent_message: str = Field(
+        default="", description="Follow-up question to the user (empty unless asking)"
+    )
 
 
 def _make_optional(model: Type[BaseModel]) -> Type[BaseModel]:
