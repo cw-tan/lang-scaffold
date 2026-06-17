@@ -57,8 +57,7 @@ def build_extraction_loop(
     llm_followup: bool = True,
 ) -> Any:
     """
-    Build a LangGraph that fills a Pydantic model from conversation, one turn
-    per invocation.
+    Build a LangGraph that fills a Pydantic model from conversation, one turn per invocation.
 
     Each invocation runs a single extract -> decide cycle: it merges newly
     extracted fields into ``filled``, then either validates the complete target
@@ -147,11 +146,11 @@ def build_extraction_loop(
                 content=(
                     f"{context_prompt}\n\n"
                     f"So far you have collected: {have}.\n"
-                    f"You still REQUIRE (the task is not done without these):\n{need_lines}\n\n"
+                    f"You still require:\n{need_lines}\n\n"
                     "Reply with a message asking the user for the still-missing information, "
-                    "with brief context for why it is needed."
-                    "If the user is reluctant or declines, politely but firmly explain it is required to proceed and ask again."
-                    "Do not give up, do not claim the task is complete, and do not move on until every required field is provided."
+                    "with brief context for why it is needed. "
+                    "If the user is reluctant or declines, politely but firmly explain it is required to proceed and ask again. "
+                    "Do not give up, do not claim the task is complete, and do not move on until every required field is provided. "
                 )
             )
             try:
