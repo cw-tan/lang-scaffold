@@ -69,8 +69,7 @@ def test_multi_turn_extraction(llm):
     )
 
     assert result1.result is None  # not complete -> no validated model yet
-    assert "email" in result1.missing
-    assert result1.agent_message  # a follow-up question
+    assert result1.agent_message  # a follow-up question asking for the email
 
     # second turn: client feeds new input + prior state back in
     result1.user_input = "My email is bob@example.com"

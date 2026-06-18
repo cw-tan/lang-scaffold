@@ -14,7 +14,7 @@ import os
 from typing import Optional
 
 from langchain_anthropic import ChatAnthropic
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lang_scaffold import ExtractionState, build_extraction_loop
 from lang_scaffold.monitor import PromptLogger
@@ -30,6 +30,21 @@ class PersonInfo(BaseModel):
     phone: str = Field(..., description="Phone number")
     age: Optional[int] = Field(default=None, description="Age in years")
     country: str = Field(default="USA", description="Country of residence")
+
+    @field_validator("email")
+    @classmethod
+    def _dotcom(cls, v: str) -> str:
+        # field-level validation
+        assert v.endswith(".com"), "email must end with .com"
+        return v
+
+    @model_validator(mode="after")
+    def _phone_matches_country(self):
+        # cross-field (post) validation: phone length depends on country
+        expected = 10 if self.country == "USA" else 8
+        digits = sum(c.isdigit() for c in self.phone)
+        assert digits == expected, f"a {self.country} phone number needs {expected} digits"
+        return self
 
 
 def main():
@@ -78,7 +93,7 @@ def main():
     if state.result is not None:
         print(f"result model : {state.result!r}")  # validated PersonInfo
     else:
-        print(f"partial fill : {state.filled} (still missing: {state.missing})")
+        print(f"partial fill : {state.filled}")
 
 
 if __name__ == "__main__":
