@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Minimal example showing the client/library split.
+"""Minimal interactive example showing the client/library split.
 
 The library gives a one-turn graph. The CLIENT owns the loop below: it invokes
-the graph, does the I/O when the graph asks a question, threads the reply back
-in, and owns the turn budget. Everything inside `graph.invoke` is the library.
+the graph, does the I/O when the graph asks a question or proposes a result,
+threads the reply back in, and owns the turn budget. Everything inside
+`graph.invoke` is the library.
 
-Toggle INTERACTIVE:
-  True  -> chat in the terminal; LLM I/O logged to llm.jsonl (inspect separately)
-  False -> scripted replies, with PromptLogger printing the raw LLM I/O to stdout
+A complete extraction comes back as a PROPOSAL (`state.proposed`) for the user to
+confirm before it is finalized -- so a valid-but-unintended value can be caught.
+Chat in the terminal; LLM I/O is logged to llm.jsonl (inspect with show_log.py).
 """
 
 import os
@@ -17,9 +18,8 @@ from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lang_scaffold import ExtractionState, build_extraction_loop
+from lang_scaffold.cli import ask, banner, confirm_or_correct, say, thinking
 from lang_scaffold.monitor import PromptLogger
-
-INTERACTIVE = True
 
 
 class ContactInfo(BaseModel):
@@ -69,30 +69,31 @@ def main():
         context_prompt="You are collecting a person's contact details.",
     )
 
-    # === seed the first turn ===
-    if INTERACTIVE:
-        # LLM I/O goes to a JSONL file
-        config = {"callbacks": [PromptLogger("llm.jsonl")]}
-        print("Hi! Let's set up your contact details. Tell me about yourself.")
-        state = ExtractionState(user_input=input("\n> "))
-    else:
-        config = {"callbacks": [PromptLogger()]}  # show the raw LLM I/O instead
-        scripted = iter(["my email is alice@example.com and my phone is 555-0123"])
-        state = ExtractionState(user_input="Hi, I'm Alice Johnson")
+    # === seed the first turn (LLM I/O logged to llm.jsonl, inspect with show_log.py) ===
+    config = {"callbacks": [PromptLogger("llm.jsonl")]}
+    banner("Contact Setup", "I'll collect your contact details. Tell me about yourself.")
+    state = ExtractionState(user_input=ask())
 
     # === extraction loop (client owns it + the budget) ===
     for _ in range(10):
-        state = ExtractionState(**graph.invoke(state, config=config))
+        with thinking("thinking...", "extracting...", "checking..."):
+            result = graph.invoke(state, config=config)
+        state = ExtractionState(**result)
 
-        if state.result is not None:  # complete once the model validates
+        if state.result is not None:  # confirmed -> done
             break
 
-        # still incomplete: show the question and get the next reply
-        if INTERACTIVE:
-            print(f"\n{state.agent_message}")
-            state.user_input = input("\n> ")
+        if state.proposed is not None:
+            # complete proposal -> explicit accept/reject (never inferred from free text)
+            accepted, reason = confirm_or_correct(state.agent_message)
+            if accepted:
+                state.confirmed = True  # next loop finalizes it
+            else:
+                state.user_input = reason  # correction -> re-extract
         else:
-            state.user_input = next(scripted, "I don't know")
+            # still collecting -> answer the question
+            say(state.agent_message)
+            state.user_input = ask()
 
     # === result ===
     print(f"\n{'=' * 60}\n  RESULT\n{'=' * 60}")
