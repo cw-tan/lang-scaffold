@@ -54,11 +54,11 @@ class PersonInfo(BaseModel):
 
 
 def main():
-    # === set up LLM (OpenAI-compatible endpoint via LLM_BASE_URL, no defaults) ===
+    # === set up LLM (provider/endpoint/model all from env, no defaults) ===
     llm = init_chat_model(
         os.environ["LLM_MODEL"],
-        model_provider="openai",
-        base_url=os.environ["LLM_BASE_URL"],
+        model_provider=os.environ["LLM_PROVIDER"],
+        base_url=os.environ.get("LLM_BASE_URL") or None,  # unset/empty -> provider default
         api_key=os.environ["LLM_API_KEY"],
     )
 
