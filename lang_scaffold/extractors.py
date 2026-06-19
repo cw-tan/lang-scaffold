@@ -12,12 +12,13 @@ from lang_scaffold.utils import schema_summary
 class ExtractionState(BaseModel):
     """State for the extraction loop graph.
 
-    The client owns the multi-turn loop: it sets a new ``user_input`` each turn,
-    passes the rest of the state back in, and decides when to stop.
-    Only ``user_input`` is required to seed a conversation; everything else defaults.
+    The client owns the multi-turn loop: each turn it either sets a new
+    ``user_input`` or sets ``confirmed=True`` to accept the standing proposal,
+    passes the rest of the state back in, and decides when to stop. Everything
+    defaults, so a fresh ``ExtractionState(user_input=...)`` seeds a conversation.
     """
 
-    user_input: str = Field(description="New user input for this turn")
+    user_input: str = Field(default="", description="New user input for this turn")
     filled: dict[str, Any] = Field(
         default_factory=dict, description="Accumulated raw fields"
     )
@@ -25,10 +26,17 @@ class ExtractionState(BaseModel):
         default_factory=list, description="Running conversation transcript"
     )
     result: Optional[BaseModel] = Field(
-        default=None, description="Validated target model; None until complete"
+        default=None, description="Final validated model; set only after confirmation"
+    )
+    proposed: Optional[BaseModel] = Field(
+        default=None, description="Complete, valid candidate awaiting confirmation"
+    )
+    confirmed: bool = Field(
+        default=False, description="Client sets True to accept `proposed` as final"
     )
     agent_message: str = Field(
-        default="", description="Follow-up question to the user (empty unless asking)"
+        default="",
+        description="Message to the user (a proposal or a follow-up question)",
     )
 
 
@@ -78,6 +86,35 @@ def _make_optional(model: Type[BaseModel]) -> Type[BaseModel]:
     return create_model(f"{model.__name__}Partial", **fields)
 
 
+def _render_fields(data: dict, indent: int = 1) -> list[str]:
+    """Flatten a model_dump into ``- key: value`` lines, nesting dicts/lists with indentation."""
+    pad = "  " * indent
+    lines = []
+    for k, v in data.items():
+        if isinstance(v, dict):
+            lines.append(f"{pad}- {k}:")
+            lines.extend(_render_fields(v, indent + 1))
+        elif isinstance(v, list):
+            lines.append(f"{pad}- {k}:")
+            for item in v:
+                if isinstance(item, dict):
+                    lines.extend(_render_fields(item, indent + 1))
+                else:
+                    lines.append(f"{'  ' * (indent + 1)}- {item}")
+        else:
+            lines.append(f"{pad}- {k}: {v}")
+    return lines
+
+
+def _confirm_msg(candidate: BaseModel) -> str:
+    """Render a complete extraction as a confirmation prompt to the user."""
+    fields = "\n".join(_render_fields(candidate.model_dump()))
+    return (
+        f"Here's what I have:\n{fields}\n\n"
+        "Is this correct? Confirm to finish, or tell me what to change."
+    )
+
+
 def build_extraction_loop(
     llm: BaseLanguageModel,
     model: Type[BaseModel],
@@ -91,9 +128,19 @@ def build_extraction_loop(
     Each turn extracts into ``model`` and validates it. On a validation failure
     an LLM router decides whether to silently re-extract (it misread the input)
     or to ask the user (information is missing or genuinely invalid), re-extracting
-    up to ``retry_cap`` times before falling back to asking. The client drives the
-    multi-turn loop, re-invoking with the returned state until ``result`` is not
-    None (complete) or it decides to give up.
+    up to ``retry_cap`` times before falling back to asking.
+
+    A complete, valid extraction is NOT finalized immediately -- it is returned as
+    ``proposed`` with an ``agent_message`` showing the user what was captured. This
+    guards against valid-but-unintended values (the model's own choices), which
+    validation cannot catch. The client shows the proposal and either re-invokes
+    with ``confirmed=True`` to finalize it, or feeds a correction via ``user_input``
+    to re-extract.
+
+    Each invocation returns one of three outcomes:
+      - ``result`` set   -> done (the user confirmed the proposal)
+      - ``proposed`` set -> complete candidate awaiting confirmation
+      - both None        -> still collecting; ``agent_message`` asks for the gap
 
     Args:
         llm: Initialized language model with structured output support.
@@ -107,7 +154,7 @@ def build_extraction_loop(
         context_prompt: System context for the LLM, used for both extraction and
             routing/phrasing.
         retry_cap: Max self-correction re-extractions per turn before asking the
-            user (default 3).
+            user (default 6).
 
     Returns:
         Compiled graph ready to invoke. Note ``invoke`` returns a plain dict;
@@ -127,6 +174,17 @@ def build_extraction_loop(
     )
 
     def extract_node(state: ExtractionState) -> dict:
+        # the user confirmed the standing proposal -> promote it to final, no re-extraction
+        if state.confirmed and state.proposed is not None:
+            return {
+                "result": state.proposed,
+                "proposed": None,
+                "confirmed": False,  # consume the signal so it can't re-fire next turn
+                "filled": dict(state.filled),
+                "messages": state.messages,
+                "agent_message": "",
+            }
+
         history = [*state.messages, HumanMessage(content=state.user_input)]
         filled = dict(state.filled)
         feedback = ""
@@ -150,13 +208,7 @@ def build_extraction_loop(
             # well-typed data that fails the strict model (required field or validator) is ambiguous
             # (the LLM misread, or the user's data is genuinely bad/missing) so the router decides retry vs ask
             try:
-                result = model(**filled)
-                return {
-                    "filled": filled,
-                    "result": result,
-                    "messages": history,
-                    "agent_message": "",
-                }
+                candidate = model(**filled)
             except ValidationError as e:
                 errors = "; ".join(
                     f"{'.'.join(str(x) for x in err['loc']) or '(model)'}: {err['msg']}"
@@ -188,16 +240,30 @@ def build_extraction_loop(
                     return {
                         "filled": filled,
                         "result": None,
+                        "proposed": None,
                         "messages": [*history, AIMessage(content=routing.message)],
                         "agent_message": routing.message,
                     }
                 feedback = routing.message
+                continue
+
+            # complete & valid -> propose it for confirmation instead of finalizing,
+            # so the user can catch a valid-but-unintended value before it locks in
+            msg = _confirm_msg(candidate)
+            return {
+                "filled": filled,
+                "result": None,
+                "proposed": candidate,
+                "messages": [*history, AIMessage(content=msg)],
+                "agent_message": msg,
+            }
 
         # retries exhausted -> ask the user, surfacing the last failure detail
         msg = f"I'm still having trouble: {errors or feedback}. Could you help me correct that?"
         return {
             "filled": filled,
             "result": None,
+            "proposed": None,
             "messages": [*history, AIMessage(content=msg)],
             "agent_message": msg,
         }
