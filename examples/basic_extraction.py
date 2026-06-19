@@ -13,7 +13,7 @@ Toggle INTERACTIVE:
 import os
 from typing import Optional
 
-from langchain_anthropic import ChatAnthropic
+from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lang_scaffold import ExtractionState, build_extraction_loop
@@ -22,14 +22,11 @@ from lang_scaffold.monitor import PromptLogger
 INTERACTIVE = True
 
 
-class PersonInfo(BaseModel):
-    """Fields we want to collect from the user."""
+class ContactInfo(BaseModel):
+    """Nested contact details."""
 
-    name: str = Field(..., description="Full name")
     email: str = Field(..., description="Email address")
     phone: str = Field(..., description="Phone number")
-    age: Optional[int] = Field(default=None, description="Age in years")
-    country: str = Field(default="USA", description="Country of residence")
 
     @field_validator("email")
     @classmethod
@@ -38,23 +35,32 @@ class PersonInfo(BaseModel):
         assert v.endswith(".com"), "email must end with .com"
         return v
 
+
+class PersonInfo(BaseModel):
+    """Fields we want to collect from the user."""
+
+    name: str = Field(..., description="Full name")
+    contact: ContactInfo = Field(..., description="Contact information")
+    age: Optional[int] = Field(default=None, description="Age in years")
+    country: str = Field(default="USA", description="Country of residence")
+
     @model_validator(mode="after")
     def _phone_matches_country(self):
-        # cross-field (post) validation: phone length depends on country
+        # cross-field (post) validation reaching into the nested model
         expected = 10 if self.country == "USA" else 8
-        digits = sum(c.isdigit() for c in self.phone)
+        digits = sum(c.isdigit() for c in self.contact.phone)
         assert digits == expected, f"a {self.country} phone number needs {expected} digits"
         return self
 
 
 def main():
-    # === set up LLM ===
-    api_key = os.getenv("LLM_API_KEY")
-    if not api_key:
-        print("Error: LLM_API_KEY not set")
-        return
-    model = os.getenv("LLM_MODEL", "claude-3-5-sonnet-20241022")
-    llm = ChatAnthropic(api_key=api_key, model=model)
+    # === set up LLM (OpenAI-compatible endpoint via LLM_BASE_URL, no defaults) ===
+    llm = init_chat_model(
+        os.environ["LLM_MODEL"],
+        model_provider="openai",
+        base_url=os.environ["LLM_BASE_URL"],
+        api_key=os.environ["LLM_API_KEY"],
+    )
 
     # === build graph ===
     graph = build_extraction_loop(
