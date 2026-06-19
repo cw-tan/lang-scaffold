@@ -1,9 +1,12 @@
-from typing import Any, Literal, Optional, Type
+import types
+from typing import Any, Literal, Optional, Type, Union, get_args, get_origin
 
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field, ValidationError, create_model
+
+from lang_scaffold.utils import schema_summary
 
 
 class ExtractionState(BaseModel):
@@ -39,11 +42,20 @@ class _Routing(BaseModel):
         )
     )
     message: str = Field(
-        description=(
-            "If 'ask', a brief friendly message asking the user for the "
-            "missing/invalid information. If 'retry', a short note on what to fix."
-        )
+        description="The message to the user when asking, or a fix-it note when retrying."
     )
+
+
+def _relax(annotation: Any) -> Any:
+    """Recursively relax an annotation so nested models become optional too."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return _make_optional(annotation)
+    origin = get_origin(annotation)
+    if origin in (Union, types.UnionType):  # Optional[Model], Model | None, ...
+        return Union[tuple(_relax(a) for a in get_args(annotation))]
+    if origin is list:  # list[Model]
+        return list[_relax(get_args(annotation)[0])]
+    return annotation
 
 
 def _make_optional(model: Type[BaseModel]) -> Type[BaseModel]:
@@ -52,12 +64,13 @@ def _make_optional(model: Type[BaseModel]) -> Type[BaseModel]:
     Required fields would otherwise force the LLM to invent values to satisfy
     the structured-output schema. Making every field optional (default None)
     lets it return null for what it doesn't know, while field descriptions are
-    preserved so the schema stays informative. Validators are intentionally not
+    preserved so the schema stays informative. Nested models are relaxed
+    recursively (so partial nested objects are allowed); validators are not
     copied -- validity is checked against the strict ``model`` instead.
     """
     fields = {
         name: (
-            Optional[f.annotation],
+            Optional[_relax(f.annotation)],
             Field(default=None, description=f.description),
         )
         for name, f in model.model_fields.items()
@@ -69,7 +82,7 @@ def build_extraction_loop(
     llm: BaseLanguageModel,
     model: Type[BaseModel],
     context_prompt: str,
-    retry_cap: int = 3,
+    retry_cap: int = 6,
 ) -> Any:
     """
     Build a LangGraph that fills a Pydantic model from conversation, one turn
@@ -100,13 +113,17 @@ def build_extraction_loop(
         Compiled graph ready to invoke. Note ``invoke`` returns a plain dict;
         wrap it back into ``ExtractionState`` if you want attribute access.
     """
-    structured_llm = llm.with_structured_output(_make_optional(model))
+    # include_raw=True: malformed output surfaces as parsing_error instead of
+    # raising, so we can retry it; API/transport errors still raise (propagate)
+    structured_llm = llm.with_structured_output(_make_optional(model), include_raw=True)
     router_llm = llm.with_structured_output(_Routing)
+    schema = schema_summary(model)
     extract_system = (
         f"{context_prompt}\n\n"
-        "Extract only information the user has explicitly provided. For any field "
-        "the user has not given, leave it null -- do NOT guess, infer, or fill in "
-        "placeholders such as 'unknown', 'N/A', or 'none'."
+        f"Your task is to fill in this schema from what the user provides:\n{schema}\n\n"
+        "Extract only information the user has explicitly provided. For any field the "
+        "user has not given, leave it null -- do NOT guess, infer, fabricate to satisfy "
+        "'required', or fill in placeholders such as 'unknown', 'N/A', or 'none'."
     )
 
     def extract_node(state: ExtractionState) -> dict:
@@ -121,11 +138,17 @@ def build_extraction_loop(
                     f"\n\nYour previous extraction was invalid ({feedback}). Re-read "
                     "the conversation and correct it; do not invent or alter values."
                 )
-            extracted = structured_llm.invoke(
-                [SystemMessage(content=system), *history]
-            ).model_dump(exclude_none=True)
-            filled = {**filled, **extracted}
+            out = structured_llm.invoke([SystemMessage(content=system), *history])
+            # parse failure = output doesn't fit the types-only partial schema.
+            # always the LLM's fault (the user can't fix a malformed tool call),
+            # so the action is never in doubt -> retry directly, skip the router.
+            if out["parsing_error"]:
+                feedback = "the output was not valid structured data"
+                continue
+            filled = {**filled, **out["parsed"].model_dump(exclude_none=True)}
 
+            # well-typed data that fails the strict model (required field or validator) is ambiguous
+            # (the LLM misread, or the user's data is genuinely bad/missing) so the router decides retry vs ask
             try:
                 result = model(**filled)
                 return {
@@ -144,12 +167,16 @@ def build_extraction_loop(
                         SystemMessage(
                             content=(
                                 f"{context_prompt}\n\n"
+                                f"The task is to fill in this schema:\n{schema}\n\n"
                                 "An extraction attempt failed validation. Choose:\n"
                                 "- 'retry': you misread the conversation and can fix "
                                 "it by re-extracting.\n"
                                 "- 'ask': the user must supply or correct information "
                                 "(you cannot fix it by re-reading).\n"
-                                "Never fabricate values to pass validation.\n\n"
+                                "Never fabricate values to pass validation.\n"
+                                "When you 'ask', write a brief, friendly message that "
+                                "requests the missing/invalid info and briefly explains "
+                                "why it is needed or why the value was rejected.\n\n"
                                 f"Extracted so far: {filled}\n"
                                 f"Validation errors: {errors}"
                             )
@@ -166,8 +193,8 @@ def build_extraction_loop(
                     }
                 feedback = routing.message
 
-        # retries exhausted -> ask the user, surfacing the last errors
-        msg = f"I'm still having trouble: {errors}. Could you help me correct that?"
+        # retries exhausted -> ask the user, surfacing the last failure detail
+        msg = f"I'm still having trouble: {errors or feedback}. Could you help me correct that?"
         return {
             "filled": filled,
             "result": None,
