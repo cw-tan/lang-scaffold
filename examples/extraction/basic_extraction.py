@@ -72,11 +72,11 @@ def main():
     # === seed the first turn (LLM I/O logged to llm.jsonl, inspect with show_log.py) ===
     config = {"callbacks": [PromptLogger("llm.jsonl")]}
     say("I'll collect your contact details. Tell me about yourself.")
-    state = ExtractionState(user_input=ask())
+    state = ExtractionState(user_input=ask(color="cyan"))
 
     # === extraction loop (client owns it + the budget) ===
     for _ in range(10):
-        with thinking("thinking...", "extracting...", "checking..."):
+        with thinking("thinking...", "extracting...", "checking...", spinner_color="cyan"):
             result = graph.invoke(state, config=config)
         state = ExtractionState(**result)
 
@@ -85,7 +85,7 @@ def main():
 
         if state.proposed is not None:
             # complete proposal -> explicit accept/reject (never inferred from free text)
-            accepted, reason = confirm_or_correct(state.agent_message)
+            accepted, reason = confirm_or_correct(state.agent_message, color="cyan")
             if accepted:
                 state.confirmed = True  # next loop finalizes it
             else:
@@ -93,7 +93,7 @@ def main():
         else:
             # still collecting -> answer the question
             say(state.agent_message)
-            state.user_input = ask()
+            state.user_input = ask(color="cyan")
 
     # === result ===
     print(f"\n{'=' * 60}\n  RESULT\n{'=' * 60}")

@@ -26,9 +26,9 @@ def say(text: str) -> None:
     _console.print(Markdown(text))
 
 
-def ask(prompt: str = "❯ ") -> str:
+def ask(prompt: str = "❯ ", color: str = "cyan") -> str:
     """Read a user turn at a styled prompt."""
-    return _console.input(f"\n[bold cyan]{prompt}[/]")
+    return _console.input(f"\n[bold {color}]{prompt}[/]")
 
 
 @contextlib.contextmanager
@@ -97,7 +97,9 @@ def _read_key() -> str:
     return {"k": "up", "j": "down"}.get(ch, "other")
 
 
-def select(prompt: str, options: list[str], *, default: int = 0) -> int:
+def select(
+    prompt: str, options: list[str], default: int = 0, color: str = "cyan"
+) -> int:
     """Arrow-key menu (↑/↓ or j/k to move, Enter to choose); returns the index.
 
     A highlighted, navigable list rendered with rich.Live -- the menu collapses to
@@ -118,7 +120,7 @@ def select(prompt: str, options: list[str], *, default: int = 0) -> int:
             rows.append(
                 Text(
                     f" {'❯' if selected else ' '} {opt}",
-                    style="bold cyan" if selected else "dim",
+                    style=f"bold {color}" if selected else "dim",
                 )
             )
         return Group(*rows)
@@ -134,17 +136,20 @@ def select(prompt: str, options: list[str], *, default: int = 0) -> int:
                 idx = (idx + 1) % len(options)
             live.update(view(), refresh=True)
 
-    _console.print(f"[cyan]❯[/] {options[idx]}")
+    _console.print(f"[{color}]❯[/] {options[idx]}")
     return idx
 
 
-def confirm_or_correct(proposal: str) -> tuple[bool, str]:
+def confirm_or_correct(proposal: str, color: str = "cyan") -> tuple[bool, str]:
     """Accept/reject a proposal via a selectable menu; returns ``(accepted, reason)``.
 
     Reject prompts for a reason on a separate step, so the decision and the
     correction are never conflated and a correction can't be misread as accept.
     """
     _console.print(proposal)
-    if select("Use this?", ["Yes, looks good", "No, let me correct it"]) == 0:
+    if (
+        select("Use this?", ["Yes, looks good", "No, let me correct it"], color=color)
+        == 0
+    ):
         return True, ""
     return False, _console.input("[dim]what should change?[/] ").strip()
