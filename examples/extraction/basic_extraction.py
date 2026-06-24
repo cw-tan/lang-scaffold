@@ -18,7 +18,7 @@ from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lang_scaffold import ExtractionState, build_extraction_loop
-from lang_scaffold.cli import ask, banner, confirm_or_correct, say, thinking
+from lang_scaffold.cli import ask, confirm_or_correct, say, thinking
 from lang_scaffold.monitor import PromptLogger
 
 
@@ -71,7 +71,7 @@ def main():
 
     # === seed the first turn (LLM I/O logged to llm.jsonl, inspect with show_log.py) ===
     config = {"callbacks": [PromptLogger("llm.jsonl")]}
-    banner("Contact Setup", "I'll collect your contact details. Tell me about yourself.")
+    say("I'll collect your contact details. Tell me about yourself.")
     state = ExtractionState(user_input=ask())
 
     # === extraction loop (client owns it + the budget) ===

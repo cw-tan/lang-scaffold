@@ -12,49 +12,12 @@ import itertools
 import sys
 import threading
 
-from rich import box
-from rich.align import Align
 from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
-from rich.panel import Panel
 from rich.text import Text
 
 _console = Console()
-
-_DEFAULT_GRADIENT = ("bright_cyan", "cyan", "bright_blue", "blue", "bright_magenta")
-
-
-def _gradient(lines: list[str], colors: tuple[str, ...]) -> Text:
-    """Color lines top-to-bottom across ``colors`` for a vertical gradient."""
-    text = Text(justify="center")
-    last = max(len(lines) - 1, 1)
-    for i, line in enumerate(lines):
-        text.append(
-            line + "\n", style=f"bold {colors[round(i / last * (len(colors) - 1))]}"
-        )
-    return text
-
-
-def banner(
-    text: str, subtitle: str = "", *, colors: tuple[str, ...] = _DEFAULT_GRADIENT
-) -> None:
-    """Welcome panel: render ``text`` centered with a vertical color gradient in a
-    rounded box. ``text`` may be a plain title or pre-made multi-line ASCII art;
-    ``colors`` is the top-to-bottom gradient ramp (a single-color tuple = flat).
-    """
-    body = _gradient(text.strip("\n").splitlines(), colors)
-    if subtitle:
-        body.append("\n" + subtitle, style="dim")
-    _console.print(
-        Panel(
-            Align.center(body),
-            box=box.ROUNDED,
-            border_style=colors[0],
-            padding=(1, 4),
-            expand=False,
-        )
-    )
 
 
 def say(text: str) -> None:
