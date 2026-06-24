@@ -22,6 +22,7 @@ from pathlib import Path
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
+from lang_scaffold.cli import ask, say, thinking
 from lang_scaffold.tools.explore import EXPLORE_TOOLS
 
 SYSTEM = (
@@ -39,7 +40,8 @@ def run_agent(llm, tools_by_name: dict, question: str) -> str:
     """Drive one ReAct loop: model calls tools until it returns a final answer."""
     messages = [SystemMessage(content=SYSTEM), HumanMessage(content=question)]
     for _ in range(MAX_STEPS):
-        ai = llm.invoke(messages)
+        with thinking("thinking...", "exploring...", spinner_color="cyan", timed=True):
+            ai = llm.invoke(messages)
         messages.append(ai)
         if not ai.tool_calls:
             return ai.content
@@ -69,13 +71,13 @@ def main():
     print(f"Exploring: {os.getcwd()}  (empty line to quit)\n")
     while True:
         try:
-            question = input("ask> ").strip()
+            question = ask("ask> ", color="cyan").strip()
         except (EOFError, KeyboardInterrupt):
             break
         if not question:
             break
         print()
-        print(f"\n{run_agent(llm, tools_by_name, question)}\n")
+        say(run_agent(llm, tools_by_name, question))
 
 
 if __name__ == "__main__":
