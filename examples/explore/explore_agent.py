@@ -36,9 +36,8 @@ MAX_STEPS = 12  # cap tool-calling rounds so a confused model can't loop forever
 _DIM, _RESET = "\033[2m", "\033[0m"
 
 
-def run_agent(llm, tools_by_name: dict, question: str) -> str:
-    """Drive one ReAct loop: model calls tools until it returns a final answer."""
-    messages = [SystemMessage(content=SYSTEM), HumanMessage(content=question)]
+def run_agent(llm, tools_by_name: dict, messages: list) -> str:
+    """Drive one ReAct loop on the running transcript; extends ``messages`` in place."""
     for _ in range(MAX_STEPS):
         with thinking("thinking...", "exploring...", spinner_color="cyan", timed=True):
             ai = llm.invoke(messages)
@@ -69,6 +68,7 @@ def main():
 
     print(__doc__)
     print(f"Exploring: {os.getcwd()}  (empty line to quit)\n")
+    messages = [SystemMessage(content=SYSTEM)]  # transcript persists across questions
     while True:
         try:
             question = ask("ask> ", color="cyan").strip()
@@ -76,8 +76,9 @@ def main():
             break
         if not question:
             break
+        messages.append(HumanMessage(content=question))
         print()
-        say(run_agent(llm, tools_by_name, question))
+        say(run_agent(llm, tools_by_name, messages))
 
 
 if __name__ == "__main__":
