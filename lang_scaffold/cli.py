@@ -11,6 +11,7 @@ import contextlib
 import itertools
 import sys
 import threading
+import time
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -31,12 +32,23 @@ def ask(prompt: str = "❯ ", color: str = "cyan") -> str:
     return _console.input(f"\n[bold {color}]{prompt}[/]")
 
 
+def _format_elapsed(seconds: float) -> str:
+    """Human-readable duration: ``<1 sec``, ``3 secs``, or ``1 min 5 secs``."""
+    if seconds < 1:
+        return "<1 sec"
+    if seconds < 60:
+        return f"{seconds:.0f} secs"
+    m, sec = divmod(round(seconds), 60)
+    return f"{m} min {sec} secs"
+
+
 @contextlib.contextmanager
 def thinking(
     *phrases: str,
     interval: float = 1.5,
     spinner: str = "dots",
     spinner_color: str = "cyan",
+    timed: bool = False,
 ):
     """Animated status spinner that cycles through phrases on a timer.
 
@@ -46,11 +58,14 @@ def thinking(
     A single phrase shows a static label; multiple phrases rotate every
     ``interval`` seconds. ``spinner_color`` colors the icon (any rich style, e.g.
     "red" or "bold magenta"); phrase strings may carry rich markup to color the
-    text. Yields the rich Status so the caller can also ``.update(...)``. No-op
+    text. ``timed=True`` prints ``(thought for X)`` once the block exits cleanly.
+    Yields the rich Status so the caller can also ``.update(...)``. No-op
     animation off a TTY; for anything fancier use rich's ``console.status``.
     """
     phrases = phrases or ("working...",)
     stop = threading.Event()
+    start = time.monotonic()
+    elapsed = None
     with _console.status(
         phrases[0], spinner=spinner, spinner_style=spinner_color
     ) as status:
@@ -65,8 +80,11 @@ def thinking(
             threading.Thread(target=_rotate, daemon=True).start()
         try:
             yield status
+            elapsed = time.monotonic() - start  # set only on clean exit
         finally:
             stop.set()
+    if timed and elapsed is not None:
+        _console.print(f"[dim](thought for {_format_elapsed(elapsed)})[/]")
 
 
 @contextlib.contextmanager

@@ -76,7 +76,9 @@ def main():
 
     # === extraction loop (client owns it + the budget) ===
     for _ in range(10):
-        with thinking("thinking...", "extracting...", "checking...", spinner_color="cyan"):
+        with thinking(
+            "thinking...", "extracting...", "checking...", spinner_color="cyan", timed=True
+        ):
             result = graph.invoke(state, config=config)
         state = ExtractionState(**result)
 
