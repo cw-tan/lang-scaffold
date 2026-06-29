@@ -36,6 +36,13 @@ class ContactInfo(BaseModel):
         return v
 
 
+class Pet(BaseModel):
+    """A pet the person owns"""
+
+    name: str = Field(..., description="Pet's name")
+    species: str = Field(..., description="Species, e.g. dog or cat")
+
+
 class PersonInfo(BaseModel):
     """Fields we want to collect from the user."""
 
@@ -43,13 +50,18 @@ class PersonInfo(BaseModel):
     contact: ContactInfo = Field(..., description="Contact information")
     age: Optional[int] = Field(default=None, description="Age in years")
     country: str = Field(default="USA", description="Country of residence")
+    pets: list[Pet] = Field(
+        ..., description="The person's pets (name and species each)"
+    )
 
     @model_validator(mode="after")
     def _phone_matches_country(self):
         # cross-field (post) validation reaching into the nested model
         expected = 10 if self.country == "USA" else 8
         digits = sum(c.isdigit() for c in self.contact.phone)
-        assert digits == expected, f"a {self.country} phone number needs {expected} digits"
+        assert digits == expected, (
+            f"a {self.country} phone number needs {expected} digits"
+        )
         return self
 
 
@@ -58,7 +70,8 @@ def main():
     llm = init_chat_model(
         os.environ["LLM_MODEL"],
         model_provider=os.environ["LLM_PROVIDER"],
-        base_url=os.environ.get("LLM_BASE_URL") or None,  # unset/empty -> provider default
+        base_url=os.environ.get("LLM_BASE_URL")
+        or None,  # unset/empty -> provider default
         api_key=os.environ["LLM_API_KEY"],
     )
 
@@ -66,18 +79,22 @@ def main():
     graph = build_extraction_loop(
         llm=llm,
         model=PersonInfo,
-        context_prompt="You are collecting a person's contact details.",
+        context_prompt="You are collecting a person's contact details and their pets.",
     )
 
     # === seed the first turn (LLM I/O logged to llm.jsonl, inspect with show_log.py) ===
     config = {"callbacks": [PromptLogger("llm.jsonl")]}
-    say("I'll collect your contact details. Tell me about yourself.")
+    say("I'll collect your contact details and pets. Tell me about yourself.")
     state = ExtractionState(user_input=ask(color="cyan"))
 
     # === extraction loop (client owns it + the budget) ===
     for _ in range(10):
         with thinking(
-            "thinking...", "extracting...", "checking...", spinner_color="cyan", timed=True
+            "thinking...",
+            "extracting...",
+            "checking...",
+            spinner_color="cyan",
+            timed=True,
         ):
             result = graph.invoke(state, config=config)
         state = ExtractionState(**result)
