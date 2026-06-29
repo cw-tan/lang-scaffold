@@ -87,22 +87,25 @@ def _make_optional(model: Type[BaseModel]) -> Type[BaseModel]:
 
 
 def _render_fields(data: dict, indent: int = 1) -> list[str]:
-    """Flatten a model_dump into ``- key: value`` lines, nesting dicts/lists with indentation."""
+    """Render a model_dump as ``key: value`` lines; ``-`` marks list items only."""
     pad = "  " * indent
     lines = []
     for k, v in data.items():
         if isinstance(v, dict):
-            lines.append(f"{pad}- {k}:")
+            lines.append(f"{pad}{k}:")
             lines.extend(_render_fields(v, indent + 1))
         elif isinstance(v, list):
-            lines.append(f"{pad}- {k}:")
+            lines.append(f"{pad}{k}:")
             for item in v:
                 if isinstance(item, dict):
-                    lines.extend(_render_fields(item, indent + 1))
+                    # "-" marks the item; first field sits on it, the rest align under
+                    sub = _render_fields(item, indent + 2)
+                    lines.append(f"{'  ' * (indent + 1)}- {sub[0].lstrip()}")
+                    lines.extend(sub[1:])
                 else:
                     lines.append(f"{'  ' * (indent + 1)}- {item}")
         else:
-            lines.append(f"{pad}- {k}: {v}")
+            lines.append(f"{pad}{k}: {v}")
     return lines
 
 
