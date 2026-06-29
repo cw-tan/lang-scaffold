@@ -18,8 +18,10 @@ from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lang_scaffold import ExtractionState, build_extraction_loop
-from lang_scaffold.cli import ask, confirm_or_correct, say, thinking
-from lang_scaffold.monitor import PromptLogger
+from lang_scaffold.cli import ask, confirm_or_correct, note, say, thinking
+from lang_scaffold.monitor import PromptLogger, ToolMonitor
+from lang_scaffold.tools.explore import EXPLORE_TOOLS
+from lang_scaffold.tools.observability import with_rationale
 
 
 class ContactInfo(BaseModel):
@@ -75,15 +77,26 @@ def main():
         api_key=os.environ["LLM_API_KEY"],
     )
 
-    # === build graph ===
+    # === build graph (explore tools available; NOT told where pet info lives) ===
+    tools = [
+        with_rationale(t) for t in EXPLORE_TOOLS
+    ]  # each gather call must justify itself
     graph = build_extraction_loop(
         llm=llm,
         model=PersonInfo,
         context_prompt="You are collecting a person's contact details and their pets.",
+        tools=tools,
     )
 
     # === seed the first turn (LLM I/O logged to llm.jsonl, inspect with show_log.py) ===
-    config = {"callbacks": [PromptLogger("llm.jsonl")]}
+    config = {
+        "callbacks": [
+            PromptLogger("llm.jsonl"),
+            ToolMonitor(
+                tools, render=note
+            ),  # show tool use (+ reason) inline in the chat
+        ]
+    }
     say("I'll collect your contact details and pets. Tell me about yourself.")
     state = ExtractionState(user_input=ask(color="cyan"))
 

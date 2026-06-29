@@ -27,6 +27,11 @@ def say(text: str) -> None:
     _console.print(Markdown(text))
 
 
+def note(text: str) -> None:
+    """Print a dim aside (e.g. tool-use status)."""
+    _console.print(text, style="dim", markup=False)
+
+
 def ask(prompt: str = "❯ ", color: str = "cyan") -> str:
     """Read a user turn at a styled prompt."""
     return _console.input(f"\n[bold {color}]{prompt}[/]")

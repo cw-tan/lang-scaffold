@@ -23,8 +23,9 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from lang_scaffold.cli import ask, say, thinking
+from lang_scaffold.monitor import ToolMonitor
 from lang_scaffold.tools.explore import EXPLORE_TOOLS
-from lang_scaffold.tools.observability import describe_call, with_rationale
+from lang_scaffold.tools.observability import with_rationale
 
 SYSTEM = (
     "You are a filesystem investigator with read-only tools: list_dir, read_file, "
@@ -34,10 +35,9 @@ SYSTEM = (
 )
 
 MAX_STEPS = 12  # cap tool-calling rounds so a confused model can't loop forever
-_DIM, _RESET = "\033[2m", "\033[0m"
 
 
-def run_agent(llm, tools_by_name: dict, messages: list) -> str:
+def run_agent(llm, tools_by_name: dict, messages: list, config: dict) -> str:
     """Drive one ReAct loop on the running transcript; extends ``messages`` in place."""
     for _ in range(MAX_STEPS):
         with thinking("thinking...", "exploring...", spinner_color="cyan", timed=True):
@@ -46,14 +46,8 @@ def run_agent(llm, tools_by_name: dict, messages: list) -> str:
         if not ai.tool_calls:
             return ai.content
         for tc in ai.tool_calls:
-            desc = describe_call(tools_by_name[tc["name"]], tc["args"])
-            if desc:  # None -> tool opts out of being shown to the user
-                print(
-                    f"{_DIM}  {desc}. Purpose: {tc['args'].get('reason', '')}{_RESET}"
-                )
-            result = tools_by_name[tc["name"]].invoke(
-                tc["args"]
-            )  # wrapper strips reason
+            # ToolMonitor (in config) prints each call; the wrapper strips `reason`
+            result = tools_by_name[tc["name"]].invoke(tc["args"], config=config)
             messages.append(ToolMessage(content=result, tool_call_id=tc["id"]))
     return "(gave up: hit the step cap without a final answer)"
 
@@ -75,6 +69,9 @@ def main():
         api_key=os.environ["LLM_API_KEY"],
     ).bind_tools(tools)
     tools_by_name = {t.name: t for t in tools}
+    config = {
+        "callbacks": [ToolMonitor(tools)]
+    }  # dim, user-readable line per tool call
 
     print(__doc__)
     print(f"Exploring: {os.getcwd()}  (empty line to quit)\n")
@@ -88,7 +85,7 @@ def main():
             break
         messages.append(HumanMessage(content=question))
         print()
-        say(run_agent(llm, tools_by_name, messages))
+        say(run_agent(llm, tools_by_name, messages, config))
 
 
 if __name__ == "__main__":

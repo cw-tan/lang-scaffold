@@ -2,7 +2,13 @@ import types
 from typing import Any, Literal, Optional, Type, Union, get_args, get_origin
 
 from langchain_core.language_models import BaseLanguageModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field, ValidationError, create_model
 
@@ -122,7 +128,9 @@ def build_extraction_loop(
     llm: BaseLanguageModel,
     model: Type[BaseModel],
     context_prompt: str,
+    tools: Optional[list] = None,
     retry_cap: int = 6,
+    gather_cap: int = 6,
 ) -> Any:
     """
     Build a LangGraph that fills a Pydantic model from conversation, one turn
@@ -156,8 +164,14 @@ def build_extraction_loop(
             value is handled like a missing one.
         context_prompt: System context for the LLM, used for both extraction and
             routing/phrasing.
+        tools: Optional LangChain tools the model may call to gather information
+            before extracting. When given, each turn first runs a bounded
+            tool-calling phase whose results enter the transcript, which extraction
+            then reads. None (default) keeps the original no-tools behavior.
         retry_cap: Max self-correction re-extractions per turn before asking the
             user (default 6).
+        gather_cap: Max tool-calling rounds per turn in the gather phase (default 6);
+            ignored when ``tools`` is None.
 
     Returns:
         Compiled graph ready to invoke. Note ``invoke`` returns a plain dict;
@@ -167,6 +181,8 @@ def build_extraction_loop(
     # raising, so we can retry it; API/transport errors still raise (propagate)
     structured_llm = llm.with_structured_output(_make_optional(model), include_raw=True)
     router_llm = llm.with_structured_output(_Routing)
+    tool_llm = llm.bind_tools(tools) if tools else None
+    tools_by_name = {t.name: t for t in tools} if tools else {}
     schema = schema_summary(model)
     extract_system = (
         f"{context_prompt}\n\n"
@@ -175,6 +191,35 @@ def build_extraction_loop(
         "user has not given, leave it null -- do NOT guess, infer, fabricate to satisfy "
         "'required', or fill in placeholders such as 'unknown', 'N/A', or 'none'."
     )
+    if tools:
+        # info pulled in by the gather phase lives in the transcript -- let extraction use it
+        extract_system += (
+            "\n\nInformation retrieved via tools (shown in the conversation above) "
+            "counts as provided; extract from it as you would from the user."
+        )
+    gather_system = (
+        f"{context_prompt}\n\n"
+        f"You are gathering information to fill this schema:\n{schema}\n\n"
+        "If you are given tools, it is likely helpful to use them to achieve your goal: "
+        "look up information you do not already have instead of asking the user "
+        "unnecessarily. A tool's output is evidence you may use; never fabricate a value "
+        "you could not find. Stop calling tools once you have what they can provide."
+    )
+
+    def _gather(history: list) -> list:
+        """Let the model pull info into the transcript via tools before extraction."""
+        for _ in range(gather_cap):
+            ai = tool_llm.invoke([SystemMessage(content=gather_system), *history])
+            if not ai.tool_calls:
+                break
+            history.append(ai)
+            for tc in ai.tool_calls:
+                fn = tools_by_name.get(tc["name"])
+                out = (
+                    fn.invoke(tc["args"]) if fn else f"error: unknown tool {tc['name']}"
+                )
+                history.append(ToolMessage(content=str(out), tool_call_id=tc["id"]))
+        return history
 
     def extract_node(state: ExtractionState) -> dict:
         # the user confirmed the standing proposal -> promote it to final, no re-extraction
@@ -189,6 +234,8 @@ def build_extraction_loop(
             }
 
         history = [*state.messages, HumanMessage(content=state.user_input)]
+        if tool_llm is not None:
+            history = _gather(history)  # pull info in via tools before extracting
         filled = dict(state.filled)
         feedback = ""
         errors = ""
