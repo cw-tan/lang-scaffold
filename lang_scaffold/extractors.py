@@ -1,14 +1,10 @@
 import types
 from typing import Any, Literal, Optional, Type, Union, get_args, get_origin
 
+from langchain.agents import create_agent
+from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain_core.language_models import BaseLanguageModel
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field, ValidationError, create_model
 
@@ -181,8 +177,6 @@ def build_extraction_loop(
     # raising, so we can retry it; API/transport errors still raise (propagate)
     structured_llm = llm.with_structured_output(_make_optional(model), include_raw=True)
     router_llm = llm.with_structured_output(_Routing)
-    tool_llm = llm.bind_tools(tools) if tools else None
-    tools_by_name = {t.name: t for t in tools} if tools else {}
     schema = schema_summary(model)
     extract_system = (
         f"{context_prompt}\n\n"
@@ -206,20 +200,18 @@ def build_extraction_loop(
         "you could not find. Stop calling tools once you have what they can provide."
     )
 
-    def _gather(history: list) -> list:
-        """Let the model pull info into the transcript via tools before extraction."""
-        for _ in range(gather_cap):
-            ai = tool_llm.invoke([SystemMessage(content=gather_system), *history])
-            if not ai.tool_calls:
-                break
-            history.append(ai)
-            for tc in ai.tool_calls:
-                fn = tools_by_name.get(tc["name"])
-                out = (
-                    fn.invoke(tc["args"]) if fn else f"error: unknown tool {tc['name']}"
-                )
-                history.append(ToolMessage(content=str(out), tool_call_id=tc["id"]))
-        return history
+    # gather phase: a tool-calling agent that pulls info into the transcript before extraction
+    # create_agent runs the model<->tools loop via ToolNode, which feeds tool errors (bad args, failures) back instead of crashing; the cap bounds it.
+    gather_agent = (
+        create_agent(
+            llm,
+            tools,
+            system_prompt=gather_system,
+            middleware=[ModelCallLimitMiddleware(run_limit=gather_cap)],
+        )
+        if tools
+        else None
+    )
 
     def extract_node(state: ExtractionState) -> dict:
         # the user confirmed the standing proposal -> promote it to final, no re-extraction
@@ -234,8 +226,9 @@ def build_extraction_loop(
             }
 
         history = [*state.messages, HumanMessage(content=state.user_input)]
-        if tool_llm is not None:
-            history = _gather(history)  # pull info in via tools before extracting
+        if gather_agent is not None:
+            # tools pull info into the transcript; ToolNode feeds tool errors back
+            history = gather_agent.invoke({"messages": history})["messages"]
         filled = dict(state.filled)
         feedback = ""
         errors = ""
