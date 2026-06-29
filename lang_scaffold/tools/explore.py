@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import stat
+import time
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
@@ -24,6 +25,7 @@ from lang_scaffold.tools.observability import describe
 # output caps so a single call can never flood the agent's context
 _MAX_LINES = 1000
 _MAX_MATCHES = 200
+_TIMEOUT = 5.0  # seconds; tree-walking tools bail with a partial result past this
 
 # directories pruned from recursive walks (grep/tree) -- noise, rarely useful
 _SKIP_DIRS = {
@@ -53,9 +55,13 @@ def _human_size(n: int) -> str:
         size /= 1024
 
 
-def _walk_files(base: Path, pattern: Optional[str]):
-    """Yield files under base, pruning heavy dirs and filtering by glob pattern."""
+def _walk_files(base: Path, pattern: Optional[str], deadline: Optional[float] = None):
+    """Yield files under base, pruning heavy dirs and filtering by glob pattern.
+    Stops walking once ``deadline`` (a ``time.monotonic`` value) passes.
+    """
     for root, dirs, files in os.walk(base):
+        if deadline and time.monotonic() > deadline:
+            return  # caller detects the timeout via its own deadline check
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
         for name in files:
             if pattern and not fnmatch(name, pattern):
@@ -122,23 +128,38 @@ def read_file(path: str, offset: int = 0, limit: int = 2000) -> str:
 @describe("find files matching {pattern!r}")
 @tool(parse_docstring=True)
 def glob(pattern: str, root: str = ".") -> str:
-    """Find files and directories matching a glob pattern, newest first.
+    """Find files and directories whose name matches a glob, newest first.
+
+    Recurses from ``root`` (heavy dirs pruned), matching the basename of ``pattern``;
+    returns a partial result if the walk exceeds the time budget.
 
     Args:
-        pattern: Glob pattern, e.g. ``**/*.py`` (``**`` recurses).
+        pattern: Glob pattern, e.g. ``**/*.py``; only the basename part is matched.
         root: Directory to search under.
     """
     base = Path(root)
     if not base.is_dir():
         return f"error: not a directory: {root}"
-    matches = list(base.glob(pattern))
+    # match basenames; recursion + pruning are implicit
+    name = pattern.rsplit("/", 1)[-1]
+    deadline = time.monotonic() + _TIMEOUT
+    matches: list[Path] = []
+    timed_out = False
+    for r, dirs, files in os.walk(base):
+        if time.monotonic() > deadline:
+            timed_out = True
+            break
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+        matches.extend(Path(r) / n for n in (*dirs, *files) if fnmatch(n, name))
+        if len(matches) >= _MAX_MATCHES:
+            break
     matches.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+    flag = "  [stopped: timeout]" if timed_out else ""
     if not matches:
-        return f"no matches for {pattern!r} under {root}"
-    lines = [str(p) for p in matches]
+        return f"no matches for {pattern!r} under {root}{flag}"
     return (
-        f"{len(lines)} matches for {pattern!r} under {root} (newest first):\n"
-        + _cap(lines)
+        f"{len(matches)} matches for {pattern!r} under {root} (newest first){flag}:\n"
+        + _cap([str(p) for p in matches])
     )
 
 
@@ -165,10 +186,15 @@ def grep(
     except re.error as e:
         return f"error: invalid regex {pattern!r}: {e}"
     base = Path(path)
-    files = [base] if base.is_file() else _walk_files(base, glob)
+    deadline = time.monotonic() + _TIMEOUT
+    files = [base] if base.is_file() else _walk_files(base, glob, deadline)
     out: list[str] = []
     count = 0
+    timed_out = False
     for f in files:
+        if time.monotonic() > deadline:
+            timed_out = True
+            break
         try:
             flines = f.read_text(encoding="utf-8").splitlines()
         except (UnicodeDecodeError, OSError):
@@ -186,8 +212,10 @@ def grep(
                     out.append(f"... [stopped at {_MAX_MATCHES} matches]")
                     return f"{count} matches for {pattern!r}:\n" + "\n".join(out)
     if not count:
-        return f"no matches for {pattern!r} in {path}"
-    return f"{count} matches for {pattern!r}:\n" + "\n".join(out)
+        tail = "  [stopped: timeout]" if timed_out else ""
+        return f"no matches for {pattern!r} in {path}{tail}"
+    tail = "\n... [stopped: timeout]" if timed_out else ""
+    return f"{count} matches for {pattern!r}:\n" + "\n".join(out) + tail
 
 
 @describe("check metadata of {path}")
