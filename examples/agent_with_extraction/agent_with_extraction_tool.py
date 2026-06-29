@@ -1,21 +1,20 @@
 import os
 
+from langchain.agents import create_agent
+from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from lang_scaffold import ExtractionState, build_extraction_loop
-from lang_scaffold.cli import ask, confirm_or_correct, note, say, thinking
+from lang_scaffold.cli import ThinkingSpinner, ask, confirm_or_correct, note, say
 from lang_scaffold.monitor import ToolMonitor
 from lang_scaffold.tools.explore import EXPLORE_TOOLS
-from lang_scaffold.tools.observability import with_rationale
+from lang_scaffold.tools.lookup import build_lookup_tool
+from lang_scaffold.tools.observability import describe, with_rationale
 
-SYSTEM = (
-    "You are a helpful assistant with tools. Use them when relevant and investigate before answering rather than guessing."
-)
-
-MAX_STEPS = 12
+SYSTEM = "You are a helpful assistant with tools. Use them when relevant and investigate before answering rather than guessing."
 
 
 class Pet(BaseModel):
@@ -31,10 +30,18 @@ class PersonInfo(BaseModel):
     )
 
 
+# a small "pet records" corpus the lookup tool retrieves from, keyed by person
+PET_RECORDS = {
+    "john": "Two dogs named Bing and Bong, and a cat named Russel.",
+    "oliver": "A parrot named Kiwi.",
+    "stacy": "Three cats: Mittens, Shadow, and Luna.",
+}
+
+
 def build_collect_tool(llm, tools):
     # the extraction loop, packaged as one client-side tool: it owns its own
     # multi-turn dialogue (private transcript) and hands back only the validated
-    # result. it gets the explore tools too, so it can find info on disk while
+    # result. it gets the given tools too, so it can look things up while
     # collecting (those tool calls surface through the agent's ToolMonitor).
     graph = build_extraction_loop(
         llm=llm,
@@ -49,8 +56,7 @@ def build_collect_tool(llm, tools):
         provide or record their profile (name, email, pets)."""
         state = ExtractionState(user_input=ask("tell me about yourself: "))
         for _ in range(10):
-            with thinking("extracting...", "checking...", timed=True):
-                state = ExtractionState(**graph.invoke(state))
+            state = ExtractionState(**graph.invoke(state))
             if state.result is not None:
                 return state.result.model_dump_json()
             if state.proposed is not None:
@@ -67,20 +73,6 @@ def build_collect_tool(llm, tools):
     return collect_personal_info
 
 
-def run_agent(llm, tools_by_name, messages, config):
-    # generic ReAct loop -- collect_personal_info is just another tool to it
-    for _ in range(MAX_STEPS):
-        with thinking("thinking...", spinner_color="cyan", timed=True):
-            ai = llm.invoke(messages)
-        messages.append(ai)
-        if not ai.tool_calls:
-            return ai.content
-        for tc in ai.tool_calls:
-            result = tools_by_name[tc["name"]].invoke(tc["args"], config=config)
-            messages.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
-    return "(gave up: hit the step cap without a final answer)"
-
-
 def main():
     llm = init_chat_model(
         os.environ["LLM_MODEL"],
@@ -88,15 +80,26 @@ def main():
         base_url=os.environ.get("LLM_BASE_URL") or None,
         api_key=os.environ["LLM_API_KEY"],
     )
-    # one set of explore tools, shared by the agent and the extraction tool's gather
-    explore = [with_rationale(t) for t in EXPLORE_TOOLS]
-    tools = explore + [build_collect_tool(llm, explore)]
-    agent = llm.bind_tools(tools)
-    tools_by_name = {t.name: t for t in tools}
-    # render=note so tool lines print above the extraction tool's spinner, not over it
-    config = {"callbacks": [ToolMonitor(tools, render=note)]}
+    explore = [with_rationale(t) for t in EXPLORE_TOOLS]  # free-agent: roam the repo
+    # retrieval tool over the pet-records dict; describe() so it shows in ToolMonitor
+    records = describe(lambda a: f"look up {a['key']}'s pets")(
+        build_lookup_tool(
+            PET_RECORDS, "pet_records", "Look up a person's pets by name."
+        )
+    )
+    # the extraction loop fills `pets` by looking the person up in pet_records
+    tools = explore + [records, build_collect_tool(llm, [records])]
+    agent = create_agent(
+        llm,
+        tools,
+        system_prompt=SYSTEM,
+        middleware=[ModelCallLimitMiddleware(run_limit=12)],
+    )
+    # ThinkingSpinner spins around every model call (agent loop + nested extraction);
+    # render=note so tool lines print above that spinner, not over it
+    config = {"callbacks": [ToolMonitor(tools, render=note), ThinkingSpinner()]}
 
-    messages = [SystemMessage(content=SYSTEM)]  # transcript persists across questions
+    messages = []  # transcript persists across questions
     while True:
         try:
             question = ask("ask> ", color="cyan").strip()
@@ -105,8 +108,8 @@ def main():
         if not question:
             break
         messages.append(HumanMessage(content=question))
-        print()
-        say(run_agent(agent, tools_by_name, messages, config))
+        messages = agent.invoke({"messages": messages}, config=config)["messages"]
+        say(messages[-1].content)
 
 
 if __name__ == "__main__":
