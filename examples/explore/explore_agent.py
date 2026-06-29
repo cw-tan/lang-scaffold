@@ -1,6 +1,7 @@
 import os
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
 
@@ -23,7 +24,12 @@ def main():
         base_url=os.environ.get("LLM_BASE_URL") or None,
         api_key=os.environ["LLM_API_KEY"],
     )
-    agent = create_agent(llm, tools, system_prompt=SYSTEM)
+    agent = create_agent(
+        llm,
+        tools,
+        system_prompt=SYSTEM,
+        middleware=[ModelCallLimitMiddleware(run_limit=12)],
+    )
     config = {"callbacks": [ToolMonitor(tools, render=note)]}
 
     messages = []  # transcript persists across questions
