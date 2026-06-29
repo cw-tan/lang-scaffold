@@ -6,9 +6,6 @@ a directory by exploring on its own -- a minimal ReAct loop you can watch step b
 step. Each tool call the model makes is printed (dimmed) so you can see HOW it
 arrives at an answer, not just the answer.
 
-Run from anywhere; defaults to exploring the repo root (pass a path to override):
-    python explore_agent.py [root]
-
 Slightly-challenging prompts to try -- each needs more than one tool:
   - "Which .py file here is largest, and what does its module docstring say?"
   - "Where is the `_cap` helper used, and what is it guarding against?"
@@ -17,7 +14,6 @@ Slightly-challenging prompts to try -- each needs more than one tool:
 """
 
 import os
-from pathlib import Path
 
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -53,13 +49,6 @@ def run_agent(llm, tools_by_name: dict, messages: list, config: dict) -> str:
 
 
 def main():
-    import sys
-
-    root = (
-        Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[2]
-    )
-    os.chdir(root)  # tools resolve relative paths against cwd
-
     tools = [with_rationale(t) for t in EXPLORE_TOOLS]  # each call must justify itself
     llm = init_chat_model(
         os.environ["LLM_MODEL"],
