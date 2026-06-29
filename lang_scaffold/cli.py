@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 
+from langchain_core.callbacks import BaseCallbackHandler
 from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
@@ -90,6 +91,45 @@ def thinking(
             stop.set()
     if timed and elapsed is not None:
         _console.print(f"[dim](thought for {_format_elapsed(elapsed)})[/]")
+
+
+class ThinkingSpinner(BaseCallbackHandler):
+    """Run the ``thinking`` spinner around every model call.
+
+    Attach via ``config={"callbacks": [ThinkingSpinner()]}``: it spins on
+    ``on_chat_model_start`` and stops on ``on_llm_end``/``on_llm_error``, so the
+    spinner is up whenever a model call is in flight anywhere in the stack (the main
+    agent loop, a nested extraction, ...) and down otherwise -- including while
+    reading user input between calls. ``__init__`` args mirror ``thinking``.
+    """
+
+    def __init__(
+        self, *phrases, interval=1.5, spinner="dots", spinner_color="cyan", timed=False
+    ):
+        self._phrases = phrases or ("thinking...",)
+        self._opts = {
+            "interval": interval,
+            "spinner": spinner,
+            "spinner_color": spinner_color,
+            "timed": timed,
+        }
+        self._cm = None  # active thinking() context, driven manually
+
+    def on_chat_model_start(self, serialized, messages, **kwargs):
+        if self._cm is None:  # model calls are sequential here; guard against overlap
+            self._cm = thinking(*self._phrases, **self._opts)
+            self._cm.__enter__()
+
+    def on_llm_end(self, response, **kwargs):
+        self._stop()
+
+    def on_llm_error(self, error, **kwargs):
+        self._stop(error)
+
+    def _stop(self, error=None):
+        if self._cm is not None:
+            self._cm.__exit__(type(error) if error else None, error, None)
+            self._cm = None
 
 
 @contextlib.contextmanager

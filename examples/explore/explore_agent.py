@@ -5,7 +5,7 @@ from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
 
-from lang_scaffold.cli import ask, note, say, thinking
+from lang_scaffold.cli import ThinkingSpinner, ask, note, say
 from lang_scaffold.monitor import ToolMonitor
 from lang_scaffold.tools.explore import EXPLORE_TOOLS
 from lang_scaffold.tools.observability import with_rationale
@@ -30,7 +30,7 @@ def main():
         system_prompt=SYSTEM,
         middleware=[ModelCallLimitMiddleware(run_limit=12)],
     )
-    config = {"callbacks": [ToolMonitor(tools, render=note)]}
+    config = {"callbacks": [ToolMonitor(tools, render=note), ThinkingSpinner()]}
 
     messages = []  # transcript persists across questions
     while True:
@@ -41,8 +41,7 @@ def main():
         if not question:
             break
         messages.append(HumanMessage(question))
-        with thinking("thinking...", spinner_color="cyan", timed=True):
-            messages = agent.invoke({"messages": messages}, config=config)["messages"]
+        messages = agent.invoke({"messages": messages}, config=config)["messages"]
         say(messages[-1].content)
 
 

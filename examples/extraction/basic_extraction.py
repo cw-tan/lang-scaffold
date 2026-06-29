@@ -18,7 +18,7 @@ from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lang_scaffold import ExtractionState, build_extraction_loop
-from lang_scaffold.cli import ask, confirm_or_correct, note, say, thinking
+from lang_scaffold.cli import ThinkingSpinner, ask, confirm_or_correct, note, say
 from lang_scaffold.monitor import PromptLogger, ToolMonitor
 from lang_scaffold.tools.explore import EXPLORE_TOOLS
 from lang_scaffold.tools.observability import with_rationale
@@ -92,9 +92,8 @@ def main():
     config = {
         "callbacks": [
             PromptLogger("llm.jsonl"),
-            ToolMonitor(
-                tools, render=note
-            ),  # show tool use (+ reason) inline in the chat
+            ToolMonitor(tools, render=note),  # show tool use (+ reason) inline
+            ThinkingSpinner(),  # spinner around each model call (incl. the gather phase)
         ]
     }
     say("I'll collect your contact details and pets. Tell me about yourself.")
@@ -102,14 +101,7 @@ def main():
 
     # === extraction loop (client owns it + the budget) ===
     for _ in range(10):
-        with thinking(
-            "thinking...",
-            "extracting...",
-            "checking...",
-            spinner_color="cyan",
-            timed=True,
-        ):
-            result = graph.invoke(state, config=config)
+        result = graph.invoke(state, config=config)
         state = ExtractionState(**result)
 
         if state.result is not None:  # confirmed -> done
