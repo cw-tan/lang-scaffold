@@ -19,6 +19,8 @@ from typing import Optional
 
 from langchain_core.tools import tool
 
+from lang_scaffold.tools.observability import describe
+
 # output caps so a single call can never flood the agent's context
 _MAX_LINES = 1000
 _MAX_MATCHES = 200
@@ -61,6 +63,7 @@ def _walk_files(base: Path, pattern: Optional[str]):
             yield Path(root) / name
 
 
+@describe(lambda a: f"list directory {a.get('path', '.')}")
 @tool(parse_docstring=True)
 def list_dir(path: str = ".", show_hidden: bool = False) -> str:
     """List the entries of a directory (dirs first, then files).
@@ -87,6 +90,7 @@ def list_dir(path: str = ".", show_hidden: bool = False) -> str:
     return f"{header}\n{_cap(lines)}" if lines else f"{header}\n(empty)"
 
 
+@describe("inspect {path}")
 @tool(parse_docstring=True)
 def read_file(path: str, offset: int = 0, limit: int = 2000) -> str:
     """Read a UTF-8 text file as numbered lines.
@@ -115,6 +119,7 @@ def read_file(path: str, offset: int = 0, limit: int = 2000) -> str:
     return f"{path} (lines {offset + 1}-{last} of {total})\n{body}"
 
 
+@describe("find files matching {pattern!r}")
 @tool(parse_docstring=True)
 def glob(pattern: str, root: str = ".") -> str:
     """Find files and directories matching a glob pattern, newest first.
@@ -137,6 +142,7 @@ def glob(pattern: str, root: str = ".") -> str:
     )
 
 
+@describe("search for {pattern!r}")
 @tool(parse_docstring=True)
 def grep(
     pattern: str,
@@ -184,6 +190,7 @@ def grep(
     return f"{count} matches for {pattern!r}:\n" + "\n".join(out)
 
 
+@describe("check metadata of {path}")
 @tool(parse_docstring=True)
 def path_info(path: str) -> str:
     """Report what a path is: kind, size, permissions, and mtime.
@@ -207,6 +214,13 @@ def path_info(path: str) -> str:
     )
 
 
+@describe(
+    lambda a: (
+        f"read env var {a['name']}"
+        if a.get("name")
+        else "read all environment variables"
+    )
+)
 @tool(parse_docstring=True)
 def get_env(name: Optional[str] = None) -> str:
     """Read environment variables -- one named var, or all of them.
@@ -219,6 +233,7 @@ def get_env(name: Optional[str] = None) -> str:
     return f"{name}={os.environ[name]}" if name in os.environ else f"{name} is not set"
 
 
+@describe("locate the {name!r} executable")
 @tool(parse_docstring=True)
 def which(name: str) -> str:
     """Locate an executable on PATH (is a tool installed, and where).
@@ -230,6 +245,7 @@ def which(name: str) -> str:
     return found if found else f"{name} not found on PATH"
 
 
+@describe(lambda a: f"show the tree under {a.get('path', '.')}")
 @tool(parse_docstring=True)
 def tree(path: str = ".", depth: int = 2) -> str:
     """Print a directory tree to a given depth (dotfiles and heavy dirs pruned).

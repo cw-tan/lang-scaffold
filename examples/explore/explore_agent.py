@@ -24,6 +24,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from lang_scaffold.cli import ask, say, thinking
 from lang_scaffold.tools.explore import EXPLORE_TOOLS
+from lang_scaffold.tools.observability import describe_call, with_rationale
 
 SYSTEM = (
     "You are a filesystem investigator with read-only tools: list_dir, read_file, "
@@ -45,9 +46,14 @@ def run_agent(llm, tools_by_name: dict, messages: list) -> str:
         if not ai.tool_calls:
             return ai.content
         for tc in ai.tool_calls:
-            result = tools_by_name[tc["name"]].invoke(tc["args"])
-            preview = result if len(result) <= 300 else result[:300] + " ..."
-            print(f"{_DIM}  [{tc['name']}({tc['args']}) ->\n    {preview}]{_RESET}")
+            desc = describe_call(tools_by_name[tc["name"]], tc["args"])
+            if desc:  # None -> tool opts out of being shown to the user
+                print(
+                    f"{_DIM}  {desc}. Purpose: {tc['args'].get('reason', '')}{_RESET}"
+                )
+            result = tools_by_name[tc["name"]].invoke(
+                tc["args"]
+            )  # wrapper strips reason
             messages.append(ToolMessage(content=result, tool_call_id=tc["id"]))
     return "(gave up: hit the step cap without a final answer)"
 
@@ -55,16 +61,20 @@ def run_agent(llm, tools_by_name: dict, messages: list) -> str:
 def main():
     import sys
 
-    root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[2]
+    root = (
+        Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[2]
+    )
     os.chdir(root)  # tools resolve relative paths against cwd
 
+    tools = [with_rationale(t) for t in EXPLORE_TOOLS]  # each call must justify itself
     llm = init_chat_model(
         os.environ["LLM_MODEL"],
         model_provider=os.environ["LLM_PROVIDER"],
-        base_url=os.environ.get("LLM_BASE_URL") or None,  # unset/empty -> provider default
+        base_url=os.environ.get("LLM_BASE_URL")
+        or None,  # unset/empty -> provider default
         api_key=os.environ["LLM_API_KEY"],
-    ).bind_tools(EXPLORE_TOOLS)
-    tools_by_name = {t.name: t for t in EXPLORE_TOOLS}
+    ).bind_tools(tools)
+    tools_by_name = {t.name: t for t in tools}
 
     print(__doc__)
     print(f"Exploring: {os.getcwd()}  (empty line to quit)\n")
