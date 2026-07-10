@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from lang_scaffold import ExtractionState, build_extraction_loop
 from lang_scaffold.cli import ThinkingSpinner, ask, confirm_or_correct, note, say
 from lang_scaffold.monitor import PromptLogger, ToolMonitor
-from lang_scaffold.tools.explore import EXPLORE_TOOLS
+from lang_scaffold.tools.explore import build_explore_tools
 from lang_scaffold.tools.observability import with_rationale
 
 
@@ -79,7 +79,7 @@ def main():
 
     # === build graph (explore tools available; NOT told where pet info lives) ===
     tools = [
-        with_rationale(t) for t in EXPLORE_TOOLS
+        with_rationale(t) for t in build_explore_tools(".")
     ]  # each gather call must justify itself
     graph = build_extraction_loop(
         llm=llm,

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from lang_scaffold import ExtractionState, build_extraction_loop
 from lang_scaffold.cli import ThinkingSpinner, ask, confirm_or_correct, note, say
 from lang_scaffold.monitor import ToolMonitor
-from lang_scaffold.tools.explore import EXPLORE_TOOLS
+from lang_scaffold.tools.explore import build_explore_tools
 from lang_scaffold.tools.lookup import build_lookup_tool
 from lang_scaffold.tools.observability import describe, with_rationale
 
@@ -80,7 +80,7 @@ def main():
         base_url=os.environ.get("LLM_BASE_URL") or None,
         api_key=os.environ["LLM_API_KEY"],
     )
-    explore = [with_rationale(t) for t in EXPLORE_TOOLS]  # free-agent: roam the repo
+    explore = [with_rationale(t) for t in build_explore_tools(".")]  # roam cwd only
     # retrieval tool over the pet-records dict; describe() so it shows in ToolMonitor
     records = describe(lambda a: f"look up {a['key']}'s pets")(
         build_lookup_tool(

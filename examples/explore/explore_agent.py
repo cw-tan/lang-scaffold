@@ -7,7 +7,7 @@ from langchain_core.messages import HumanMessage
 
 from lang_scaffold.cli import ThinkingSpinner, ask, note, say
 from lang_scaffold.monitor import ToolMonitor
-from lang_scaffold.tools.explore import EXPLORE_TOOLS
+from lang_scaffold.tools.explore import build_explore_tools
 from lang_scaffold.tools.observability import with_rationale
 
 SYSTEM = (
@@ -17,7 +17,7 @@ SYSTEM = (
 
 
 def main():
-    tools = [with_rationale(t) for t in EXPLORE_TOOLS]
+    tools = [with_rationale(t) for t in build_explore_tools(".")]  # confined to cwd
     llm = init_chat_model(
         os.environ["LLM_MODEL"],
         model_provider=os.environ["LLM_PROVIDER"],
