@@ -38,11 +38,18 @@ class ContactInfo(BaseModel):
         return v
 
 
-class Pet(BaseModel):
-    """A pet the person owns"""
+class Dog(BaseModel):
+    """A dog the person owns"""
 
-    name: str = Field(..., description="Pet's name")
-    species: str = Field(..., description="Species, e.g. dog or cat")
+    name: str = Field(..., description="Dog's name")
+    breed: str = Field(..., description="Dog's breed")
+
+
+class Cat(BaseModel):
+    """A cat the person owns"""
+
+    name: str = Field(..., description="Cat's name")
+    indoor: bool = Field(..., description="Whether the cat is kept indoors")
 
 
 class PersonInfo(BaseModel):
@@ -52,8 +59,8 @@ class PersonInfo(BaseModel):
     contact: ContactInfo = Field(..., description="Contact information")
     age: Optional[int] = Field(default=None, description="Age in years")
     country: str = Field(default="USA", description="Country of residence")
-    pets: list[Pet] = Field(
-        ..., description="The person's pets (name and species each)"
+    pets: list[Dog | Cat] = Field(
+        ..., description="The person's pets; each is a dog or a cat"
     )
 
     @model_validator(mode="after")
