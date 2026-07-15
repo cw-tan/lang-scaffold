@@ -25,28 +25,28 @@ THREAD = "main"
 CONV_DIR = Path(__file__).parent / "conversations"
 
 
-def conversation_path() -> Path:
-    parser = argparse.ArgumentParser(description="Filesystem explore agent.")
-    parser.add_argument(
-        "--resume", metavar="DB", help="continue a prior conversation .db file"
-    )
-    args = parser.parse_args()
-    if args.resume:
-        return Path(args.resume)
+def parse_args():
+    p = argparse.ArgumentParser(description="Filesystem explore agent.")
+    p.add_argument("--resume", metavar="DB", help="continue a prior conversation")
+    return p.parse_args()
+
+
+def new_conversation_path() -> Path:
     CONV_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     return CONV_DIR / f"explore-{stamp}.db"
 
 
 def main():
-    path = conversation_path()
-    tools = [with_rationale(t) for t in build_explore_tools(".")]  # confined to cwd
+    args = parse_args()
     llm = init_chat_model(
         os.environ["LLM_MODEL"],
         model_provider=os.environ["LLM_PROVIDER"],
         base_url=os.environ.get("LLM_BASE_URL") or None,
         api_key=os.environ["LLM_API_KEY"],
     )
+    path = Path(args.resume) if args.resume else new_conversation_path()
+    tools = [with_rationale(t) for t in build_explore_tools(".")]  # confined to cwd
     # the sqlite connection must stay open for the whole session, so wrap the loop
     with SqliteSaver.from_conn_string(str(path)) as cp:
         agent = create_agent(
