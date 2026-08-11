@@ -12,6 +12,7 @@ import itertools
 import sys
 import threading
 import time
+from difflib import SequenceMatcher
 
 from langchain_core.callbacks import BaseCallbackHandler
 from rich.console import Console, Group
@@ -203,16 +204,49 @@ def select(
     return idx
 
 
-def confirm_or_correct(proposal: str, color: str = "cyan") -> tuple[bool, str]:
+def diff_text(before: str, after: str) -> Text:
+    """Render a before/after pair as an interleaved diff: red ``-``, green ``+``.
+
+    Changes appear where they occur rather than as one block then the other. Nothing
+    is elided -- a diff a human is being asked to approve has to be shown in full. The
+    ``-``/``+`` prefixes are kept so it still reads with color stripped (piped output,
+    ``NO_COLOR``, red-green colorblindness): color is never the only signal. A ``Text``
+    carries its own styles, so the result is immune to markup parsing that would
+    otherwise mangle bracketed code.
+    """
+    old, new = before.splitlines(), after.splitlines()
+    out = Text()
+
+    def emit(prefix: str, lines: list[str], style: str) -> None:
+        for line in lines:
+            out.append(f"{prefix}{line}\n", style=style)
+
+    for tag, i1, i2, j1, j2 in SequenceMatcher(None, old, new).get_opcodes():
+        if tag == "equal":
+            emit("  ", old[i1:i2], "dim")
+            continue
+        if tag in ("replace", "delete"):
+            emit("- ", old[i1:i2], "red")
+        if tag in ("replace", "insert"):
+            emit("+ ", new[j1:j2], "green")
+    return out
+
+
+def confirm_or_correct(proposal: str | Text, color: str = "cyan") -> tuple[bool, str]:
     """Accept/reject a proposal via a selectable menu; returns ``(accepted, reason)``.
 
     Reject prompts for a reason on a separate step, so the decision and the
     correction are never conflated and a correction can't be misread as accept.
     """
-    _console.print(proposal)
+    # proposals are data, never rich markup; a pre-styled Text (see diff_text) is
+    # unaffected by the flag, which is why colored diffs have to arrive that way
+    _console.print(proposal, markup=False)
     if (
         select("Use this?", ["Yes, looks good", "No, let me correct it"], color=color)
         == 0
     ):
         return True, ""
-    return False, _console.input("[dim]what should change?[/] ").strip()
+    try:
+        return False, _console.input("[dim]what should change?[/] ").strip()
+    except EOFError:  # exhausted stdin: still a rejection, just an unexplained one
+        return False, ""
