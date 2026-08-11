@@ -3,6 +3,10 @@
 ``build_explore_tools()`` -> tools that read anywhere the process can.
 ``build_explore_tools(base)`` -> every path confined to ``base`` (``..``, absolute, and symlink escapes rejected), stated in each tool's description.
 ``get_env`` exposes environment variables regardless of ``base``.
+
+Pass a shared ``ReadTracker`` to pair these with the mutating tools in
+``lang_scaffold.tools.edit``: ``read_file`` records what the agent has seen, which is
+what lets a write refuse to clobber unread or externally-changed content.
 """
 
 import os
@@ -36,12 +40,95 @@ _SKIP_DIRS = {
 }
 
 
-def _cap(lines: list[str]) -> str:
-    """Join lines, truncating past the cap with a marker."""
-    if len(lines) > _MAX_LINES:
-        extra = len(lines) - _MAX_LINES
-        return "\n".join(lines[:_MAX_LINES]) + f"\n... [{extra} more lines truncated]"
+def cap(lines: list[str], limit: int = _MAX_LINES) -> str:
+    """Join lines, truncating past ``limit`` with a marker."""
+    if len(lines) > limit:
+        extra = len(lines) - limit
+        return "\n".join(lines[:limit]) + f"\n... [{extra} more lines truncated]"
     return "\n".join(lines)
+
+
+def confine(base: Optional[str]):
+    """Return ``(resolve, base)`` for path-taking tools.
+
+    ``resolve(path)`` -> ``(abs Path, None)`` if the path is inside ``base``, else
+    ``(None, error)``; ``..``, absolute paths, and symlinks pointing out are all
+    rejected. ``base=None`` leaves paths unrestricted (resolved against the cwd) and
+    ``resolve`` never errors.
+    """
+    _base = Path(base).resolve() if base else None
+
+    def resolve(path: str):
+        if _base is None:
+            return Path(path), None
+        candidate = _base / path  # absolute RHS wins; unresolved so path_info can lstat
+        if not candidate.resolve().is_relative_to(_base):  # resolve() follows symlinks
+            return None, (
+                f"error: {path!r} is outside the allowed directory {_base} -- "
+                "only paths under it are accessible"
+            )
+        return candidate, None
+
+    return resolve, _base
+
+
+def note_base(tools: list, base: Optional[Path], skip: tuple = ()) -> list:
+    """Tell the model about the confinement, in the description of each path-taking tool."""
+    if base is not None:
+        note = f"  Restricted to {base}; paths outside it are rejected."
+        for t in tools:
+            if t.name not in skip:
+                t.description += note
+    return tools
+
+
+class ReadTracker:
+    """Records the files an agent has read, so a write can refuse to clobber blindly.
+
+    One instance is shared by the explore and edit tool sets: ``read_file`` calls
+    ``record``, the mutating tools call ``check`` and pass its message straight back
+    to the model.
+    """
+
+    def __init__(self):
+        self._seen: dict[str, tuple[int, int, bool]] = {}  # -> (mtime_ns, size, whole)
+
+    def record(self, path: Path, whole: bool = True) -> None:
+        try:
+            st = path.stat()
+        except OSError:
+            return
+        key, state = str(path.resolve()), (st.st_mtime_ns, st.st_size)
+        prior = self._seen.get(key)
+        # a partial read must not downgrade an earlier full read of the same content
+        full = whole or bool(prior and prior[:2] == state and prior[2])
+        self._seen[key] = (*state, full)
+
+    def check(self, path: Path, whole: bool = False) -> Optional[str]:
+        """None if the file is safe to modify, else the reason it is not.
+        ``whole=True`` additionally requires that the agent has read the entire file.
+        """
+        prior = self._seen.get(str(path.resolve()))
+        if prior is None:
+            return (
+                f"error: {path} has not been read in this session -- read it first so "
+                "you do not overwrite content you have not seen"
+            )
+        try:
+            st = path.stat()
+        except OSError:
+            return f"error: cannot stat {path}"
+        if (st.st_mtime_ns, st.st_size) != prior[:2]:
+            return (
+                f"error: {path} changed on disk since you read it -- re-read it before "
+                "modifying, or your edit will discard that change"
+            )
+        if whole and not prior[2]:
+            return (
+                f"error: only part of {path} has been read -- read all of it before "
+                "replacing its contents, or use edit_file for a targeted change"
+            )
+        return None
 
 
 def _human_size(n: int) -> str:
@@ -85,26 +172,17 @@ def _tree(d: Path, depth: int, prefix: str, lines: list[str]) -> None:
             lines.append(f"{prefix}{e.name}")
 
 
-def build_explore_tools(base: Optional[str] = None) -> list:
+def build_explore_tools(
+    base: Optional[str] = None, tracker: Optional[ReadTracker] = None
+) -> list:
     """Build the read-only explore tools.
 
     If ``base`` is given, every path arg is confined to it (``..``, absolute, and
     symlink escapes rejected) and each path tool's description says so. ``base=None``
-    leaves paths unrestricted (resolved against the cwd).
+    leaves paths unrestricted (resolved against the cwd). A ``tracker`` shared with
+    ``build_edit_tools`` makes ``read_file`` record what the agent has seen.
     """
-    _base = Path(base).resolve() if base else None
-
-    def _resolve(path: str):
-        """(abs Path, None) if within base, else (None, error). Unconfined -> as-is."""
-        if _base is None:
-            return Path(path), None
-        candidate = _base / path  # absolute RHS wins; unresolved so path_info can lstat
-        if not candidate.resolve().is_relative_to(_base):  # resolve() follows symlinks
-            return None, (
-                f"error: {path!r} is outside the allowed directory {_base} -- "
-                "only paths under it are accessible"
-            )
-        return candidate, None
+    _resolve, _base = confine(base)
 
     @describe(lambda a: f"list directory {a.get('path', '.')}")
     @tool(parse_docstring=True)
@@ -132,7 +210,7 @@ def build_explore_tools(base: Optional[str] = None) -> list:
             else:
                 lines.append(f"{e.name}  ({_human_size(e.stat().st_size)})")
         header = f"{p} ({len(lines)} entries)"
-        return f"{header}\n{_cap(lines)}" if lines else f"{header}\n(empty)"
+        return f"{header}\n{cap(lines)}" if lines else f"{header}\n(empty)"
 
     @describe("inspect {path}")
     @tool(parse_docstring=True)
@@ -156,10 +234,15 @@ def build_explore_tools(base: Optional[str] = None) -> list:
         lines = text.splitlines()
         total = len(lines)
         if total == 0:
+            if tracker is not None:
+                tracker.record(p)
             return f"{path} (empty file)"
         offset = max(0, offset)
         window = lines[offset : offset + limit]
         last = offset + len(window)
+        if tracker is not None:
+            # only a complete read licenses a full-file overwrite
+            tracker.record(p, whole=(offset == 0 and last == total))
         width = len(str(last))
         body = "\n".join(
             f"{offset + k + 1:>{width}}| {ln}" for k, ln in enumerate(window)
@@ -202,7 +285,7 @@ def build_explore_tools(base: Optional[str] = None) -> list:
             return f"no matches for {pattern!r} under {root}{flag}"
         return (
             f"{len(matches)} matches for {pattern!r} under {root} (newest first){flag}:\n"
-            + _cap([str(p) for p in matches])
+            + cap([str(p) for p in matches])
         )
 
     @describe("search for {pattern!r}")
@@ -301,7 +384,7 @@ def build_explore_tools(base: Optional[str] = None) -> list:
             name: Variable to read; omit to list every variable.
         """
         if name is None:
-            return _cap([f"{k}={v}" for k, v in sorted(os.environ.items())])
+            return cap([f"{k}={v}" for k, v in sorted(os.environ.items())])
         return (
             f"{name}={os.environ[name]}" if name in os.environ else f"{name} is not set"
         )
@@ -333,12 +416,7 @@ def build_explore_tools(base: Optional[str] = None) -> list:
             return f"error: not a directory: {path}"
         lines = [f"{base_dir}/"]
         _tree(base_dir, depth, "  ", lines)
-        return _cap(lines)
+        return cap(lines)
 
     tools = [list_dir, read_file, glob, grep, path_info, get_env, which, tree]
-    if _base is not None:
-        note = f"  Restricted to {_base}; paths outside it are rejected."
-        for t in tools:
-            if t.name not in ("get_env", "which"):  # these take no path
-                t.description += note
-    return tools
+    return note_base(tools, _base, skip=("get_env", "which"))  # these take no path
