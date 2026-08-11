@@ -5,11 +5,11 @@ from langchain.chat_models import init_chat_model
 
 from lang_scaffold.summary import load_messages, summarize_conversation
 
-THREAD = "main"  # matches explore_agent.py's constant thread
+THREAD = "main"  # matches coding_agent.py's constant thread
 
 
 def main():
-    p = argparse.ArgumentParser(description="Summarize a stored explore conversation.")
+    p = argparse.ArgumentParser(description="Summarize a stored agent conversation.")
     p.add_argument("db", help="conversation .db file")
     p.add_argument("--max-words", type=int, default=100, help="soft length limit")
     args = p.parse_args()
