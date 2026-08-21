@@ -25,6 +25,7 @@ from lang_scaffold.cli import (
 from lang_scaffold.monitor import ToolMonitor
 from lang_scaffold.tools.edit import build_edit_tools
 from lang_scaffold.tools.explore import ReadTracker, build_explore_tools, confine
+from lang_scaffold.tools.fs import build_fs_tools
 from lang_scaffold.tools.observability import describe_call, with_rationale
 
 # how to drive the tools is the tools' own business -- their contracts are enforced by
@@ -36,7 +37,7 @@ SYSTEM = (
 )
 
 # tools that touch the filesystem pause for approval; reads run freely
-GATED = ("write_file", "edit_file")
+GATED = ("write_file", "edit_file", "make_dir", "move_path", "copy_path")
 
 BASE = "."  # everything the agent can reach, and what previews resolve against
 _resolve, _ = confine(BASE)
@@ -62,7 +63,11 @@ def new_conversation_path() -> Path:
 def build_tools() -> list:
     """Explore + edit tools over one shared tracker, so writes see what reads recorded."""
     tracker = ReadTracker()
-    tools = build_explore_tools(BASE, tracker) + build_edit_tools(BASE, tracker)
+    tools = (
+        build_explore_tools(BASE, tracker)
+        + build_edit_tools(BASE, tracker)
+        + build_fs_tools(BASE)
+    )
     return [with_rationale(t) for t in tools]
 
 
@@ -94,45 +99,74 @@ def _current(path: str) -> str:
 
 
 def _proposal(req: dict) -> Text:
-    """The request's one-liner over a colored diff of what it would write.
+    """The request's one-liner, over a colored diff when the call writes content.
 
-    Rebuilt from the request's own args -- approving a bare path is meaningless.
+    Rebuilt from the request's own args -- approving a bare path is meaningless. A
+    path-structure call (make_dir, move_path, copy_path) writes no content and destroys
+    none, so its one-liner is the whole story.
     """
     args = req["args"]
-    if req["name"] == "edit_file":
-        before, after = args.get("old_string", ""), args.get("new_string", "")
-    else:
-        before, after = _current(args.get("path", "")), args.get("content", "")
     # indented to sit in ToolMonitor's column, leaving the -/+ signs in a gutter
-    head = Text(f"  {req.get('description') or req['name']}\n")
-    return head + diff_text(before, after)
+    head = Text(f"  {req.get('description') or req['name']}")
+    if "old_string" in args:
+        before, after = args["old_string"], args.get("new_string", "")
+    elif "content" in args:
+        before, after = _current(args.get("path", "")), args["content"]
+    else:
+        return head
+    return head + Text("\n") + diff_text(before, after)
 
 
 def _rejection(req: dict, reason: str) -> str:
-    """State that nothing happened, then relay why.
+    """State that nothing happened, relay why, and say what to do with the correction.
 
     A bare reason replaces the middleware's default text, leaving the model an
     ``error`` result with no indication the call was vetoed rather than failed -- it
-    then retries the edit and reports success for a file it never touched.
+    then retries the edit and reports success for a file it never touched. Naming the
+    next step matters too: told only not to repeat the call, the model routes around
+    the veto instead of replanning.
     """
-    target = req["args"].get("path", "the file")
     said = f' They said: "{reason}".' if reason else ""  # quoted: their words, not ours
+    next_step = (
+        " Propose a corrected call that accounts for it."
+        if reason
+        else " Ask what they want changed before trying again."
+    )
     return (
-        f"The user rejected this {req['name']} call. It was NOT executed and {target} "
-        f"is unchanged on disk.{said} Do not repeat this call unless they ask again, "
-        "and do not tell them the change was made."
+        f"The user rejected this {req['name']} call. It was NOT executed -- nothing was "
+        f"created, moved, or changed on disk.{said}{next_step} Do not repeat the call as "
+        "it stands, and do not tell them it was done."
+    )
+
+
+def _withdrawn(req: dict, cause: dict) -> str:
+    """Explain a call dropped because an earlier call in its turn was rejected."""
+    return (
+        f"This {req['name']} call was NOT executed either. It was planned in the same "
+        f"turn as the {cause['name']} call the user rejected, so it was withdrawn "
+        "unrun; nothing was created, moved, or changed on disk. Replan the whole turn "
+        "around their correction."
     )
 
 
 def collect_decisions(requests: list) -> list:
-    """Accept or reject each pending action, the same way an extraction is confirmed."""
+    """Accept or reject each pending action, the same way an extraction is confirmed.
+
+    A rejection withdraws the rest of the turn. The calls queued behind it were planned
+    on the assumption it would succeed -- approving them one by one lets the model reach
+    the vetoed state anyway, and it never sees the correction until the turn is spent.
+    """
     decisions = []
-    for req in requests:
+    for i, req in enumerate(requests):
         accepted, reason = confirm_or_correct(_proposal(req))
         if accepted:
             decisions.append({"type": "approve"})
-        else:
-            decisions.append({"type": "reject", "message": _rejection(req, reason)})
+            continue
+        decisions.append({"type": "reject", "message": _rejection(req, reason)})
+        decisions += [
+            {"type": "reject", "message": _withdrawn(r, req)} for r in requests[i + 1 :]
+        ]
+        break
     return decisions
 
 
